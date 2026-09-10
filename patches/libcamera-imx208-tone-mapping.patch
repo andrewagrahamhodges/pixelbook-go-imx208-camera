@@ -1,0 +1,53 @@
+diff --git a/src/ipa/ipu3/algorithms/tone_mapping.cpp b/src/ipa/ipu3/algorithms/tone_mapping.cpp
+index 160338c..0eacde1 100644
+--- a/src/ipa/ipu3/algorithms/tone_mapping.cpp
++++ b/src/ipa/ipu3/algorithms/tone_mapping.cpp
+@@ -90,24 +90,41 @@ void ToneMapping::process(IPAContext &context, [[maybe_unused]] const uint32_t f
+ 			  [[maybe_unused]] ControlList &metadata)
+ {
+ 	/*
+-	 * Hardcode gamma to 1.1 as a default for now.
++	 * Pixelbook Go imx208: AGC saturates (exposure and analogue gain maxed)
++	 * in typical indoor light, so shadow lift has to come from here.
++	 * Raised from upstream's 1.1, which left the image very dark.
++	 *
++	 * A bare gamma lift made the image bright but hazy (shadow noise lifted
++	 * into a gray floor). Two additions fix that:
++	 *   - blackPoint_: values below it are crushed to true black, hiding the
++	 *     pedestal/noise floor that gamma would otherwise amplify;
++	 *   - contrast_: an S-curve after gamma restores punch to the mids so the
++	 *     image no longer looks washed out.
+ 	 *
+ 	 * \todo Expose gamma control setting through the libcamera control API
+ 	 */
+-	gamma_ = 1.1;
+-
+-	if (context.activeState.toneMapping.gamma == gamma_)
+-		return;
++	gamma_ = 1.9;
++	constexpr double blackPoint = 0.04;
++	constexpr double contrast = 1.4;
+ 
+ 	struct ipu3_uapi_gamma_corr_lut &lut =
+ 		context.activeState.toneMapping.gammaCorrection;
+ 
+ 	for (uint32_t i = 0; i < std::size(lut.lut); i++) {
+ 		double j = static_cast<double>(i) / (std::size(lut.lut) - 1);
+-		double gamma = std::pow(j, 1.0 / gamma_);
++
++		/* Subtract the noise floor and re-stretch to full range. */
++		double v = std::max(0.0, (j - blackPoint) / (1.0 - blackPoint));
++
++		/* Gamma lift for brightness. */
++		v = std::pow(v, 1.0 / gamma_);
++
++		/* S-curve contrast around the midpoint. */
++		v = v < 0.5 ? 0.5 * std::pow(2.0 * v, contrast)
++			    : 1.0 - 0.5 * std::pow(2.0 * (1.0 - v), contrast);
+ 
+ 		/* The output value is expressed on 13 bits. */
+-		lut.lut[i] = gamma * 8191;
++		lut.lut[i] = v * 8191;
+ 	}
+ 
+ 	context.activeState.toneMapping.gamma = gamma_;

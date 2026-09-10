@@ -18,6 +18,7 @@ Built against **libcamera v0.7.2** (Ubuntu 26.04 stock is 0.7.0 and will not wor
 git clone --branch v0.7.2 https://git.libcamera.org/libcamera/libcamera.git
 cd libcamera
 git apply /path/to/libcamera-imx208.patch
+git apply /path/to/libcamera-imx208-tone-mapping.patch
 meson setup build -Dpipelines=uvcvideo,ipu3 -Dipas=ipu3 -Dv4l2=true -Dgstreamer=enabled
 ninja -C build && sudo ninja -C build install
 ```
@@ -31,6 +32,16 @@ systemctl --user restart pipewire wireplumber
 Verified result: `cam -l` lists `_SB_.PCI0.I2C3.CAM0`, WirePlumber loads `/usr/local/share/libcamera/ipa/ipu3/imx208.yaml`, PipeWire exposes `imx208 [libcamera]`, and GNOME Snapshot shows a picture.
 
 Known non-fatal warnings after the fix: missing location/rotation properties and V4L2 selection ioctls unsupported by the kernel driver.
+
+### Tone-mapping patch (dark image fix)
+
+Even with the helper in place, indoor images were very dark: the imx208 AGC pegs exposure and analogue gain at max in typical room light, and upstream's IPU3 IPA hardcodes tone-mapping gamma to 1.1 (nearly linear, no shadow lift). `patches/libcamera-imx208-tone-mapping.patch` replaces that curve in `src/ipa/ipu3/algorithms/tone_mapping.cpp` with a three-stage LUT:
+
+1. **Black-point crush (4%)** — values below the sensor noise floor go to true black, so brightness later doesn't turn noise into gray fog.
+2. **Gamma 1.9** — shadow/midtone lift (upstream 1.1 left shadows crushed).
+3. **Contrast S-curve 1.4** — S-curve around the midpoint restores punch so the brightened image doesn't look hazy.
+
+Order matters: normalize/crush first, then gamma, then contrast. Values were tuned visually (1.7/0.03/1.3 was the first pass, judged "brighter but foggy"; 1.9/0.04/1.4 is the current best). Exposure/gain are untouched - the lift is entirely ISP-side, so there is no frame-rate cost.
 
 ## Kernel driver patch (optional)
 
