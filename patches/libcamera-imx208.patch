@@ -1,0 +1,71 @@
+diff --git a/src/ipa/libipa/camera_sensor_helper.cpp b/src/ipa/libipa/camera_sensor_helper.cpp
+index 9457d62..e8cde5e 100644
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -530,6 +530,19 @@ public:
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("hm1246", CameraSensorHelperHm1246)
+ 
++class CameraSensorHelperImx208 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperImx208()
++	{
++		/* From datasheet: 0x40 at 10bits. */
++		blackLevel_ = 4096;
++		gain_ = AnalogueGainExp{ 1.0, expGainDb(0.3) };
++	}
++};
++
++REGISTER_CAMERA_SENSOR_HELPER("imx208", CameraSensorHelperImx208)
++
+ class CameraSensorHelperImx214 : public CameraSensorHelper
+ {
+ public:
+diff --git a/src/libcamera/pipeline/ipu3/ipu3.cpp b/src/libcamera/pipeline/ipu3/ipu3.cpp
+index 0f3e169..3708d91 100644
+--- a/src/libcamera/pipeline/ipu3/ipu3.cpp
++++ b/src/libcamera/pipeline/ipu3/ipu3.cpp
+@@ -725,11 +725,13 @@ int PipelineHandlerIPU3::start(Camera *camera, [[maybe_unused]] const ControlLis
+ 	ImgUDevice *imgu = data->imgu_;
+ 	int ret;
+ 
+-	/* Disable test pattern mode on the sensor, if any. */
++	/* Disable test pattern mode on the sensor, if any.
++	 * 非必需功能: 传感器不支持测试图案时不应阻断启动 */
+ 	ret = cio2->sensor()->setTestPatternMode(
+ 		controls::draft::TestPatternModeEnum::TestPatternModeOff);
+ 	if (ret)
+-		return ret;
++		LOG(IPU3, Warning)
++			<< "Sensor does not support test pattern mode, ignoring";
+ 
+ 	/* Allocate buffers for internal pipeline usage. */
+ 	ret = allocateBuffers(camera);
+diff --git a/src/libcamera/sensor/camera_sensor_properties.cpp b/src/libcamera/sensor/camera_sensor_properties.cpp
+index 2804315..ca16cc3 100644
+--- a/src/libcamera/sensor/camera_sensor_properties.cpp
++++ b/src/libcamera/sensor/camera_sensor_properties.cpp
+@@ -221,6 +221,22 @@ const CameraSensorProperties *CameraSensorProperties::get(const std::string &sen
+ 			},
+ 			.sensorDelays = { },
+ 		} },
++		{ "imx208", {
++			.unitCellSize = { 1120, 1120 },
++			.testPatternModes = {
++				{ controls::draft::TestPatternModeOff, 0 },
++				{ controls::draft::TestPatternModeSolidColor, 1 },
++				{ controls::draft::TestPatternModeColorBars, 2 },
++				{ controls::draft::TestPatternModeColorBarsFadeToGray, 3 },
++				{ controls::draft::TestPatternModePn9, 4 },
++			},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 1,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
+ 		{ "imx283", {
+ 			.unitCellSize = { 2400, 2400 },
+ 			.testPatternModes = {},

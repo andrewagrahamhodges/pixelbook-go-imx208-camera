@@ -1,0 +1,236 @@
+--- a/drivers/media/i2c/imx208.c
++++ b/drivers/media/i2c/imx208.c
+@@ -4,6 +4,8 @@
+ #include <linux/acpi.h>
+ #include <linux/clk.h>
+ #include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/regulator/consumer.h>
+ #include <linux/i2c.h>
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
+@@ -272,6 +274,9 @@
+ struct imx208 {
+ 	struct device *dev;
+ 	struct clk *clk;
++	struct gpio_desc *reset_gpio;
++	struct regulator *avdd;
++	bool power_enabled;
+ 
+ 	struct v4l2_subdev sd;
+ 	struct media_pad pad;
+@@ -472,6 +477,11 @@
+ 				       imx208->hflip->val |
+ 				       imx208->vflip->val << 1);
+ 		break;
++	case V4L2_CID_CAMERA_ORIENTATION:
++	case V4L2_CID_CAMERA_SENSOR_ROTATION:
++		/* 只读元数据, 无需硬件写入 */
++		ret = 0;
++		break;
+ 	default:
+ 		ret = -EINVAL;
+ 		dev_err(imx208->dev,
+@@ -536,6 +546,34 @@
+ 	return 0;
+ }
+ 
++static int imx208_get_selection(struct v4l2_subdev *sd,
++				struct v4l2_subdev_state *sd_state,
++				struct v4l2_subdev_selection *sel)
++{
++	struct imx208 *imx208 = to_imx208(sd);
++
++	/* imx208 不支持真裁切: 输出区域即整个像素阵列 (当前 mode) */
++	switch (sel->target) {
++	case V4L2_SEL_TGT_CROP:
++		sel->r.left = 0;
++		sel->r.top = 0;
++		sel->r.width = imx208->cur_mode->width;
++		sel->r.height = imx208->cur_mode->height;
++		return 0;
++
++	case V4L2_SEL_TGT_NATIVE_SIZE:
++	case V4L2_SEL_TGT_CROP_DEFAULT:
++	case V4L2_SEL_TGT_CROP_BOUNDS:
++		sel->r.left = 0;
++		sel->r.top = 0;
++		sel->r.width = supported_modes[0].width;
++		sel->r.height = supported_modes[0].height;
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
+ static void imx208_mode_to_pad_format(struct imx208 *imx208,
+ 				      const struct imx208_mode *mode,
+ 				      struct v4l2_subdev_format *fmt)
+@@ -754,6 +792,7 @@
+ 	.get_fmt = imx208_get_pad_format,
+ 	.set_fmt = imx208_set_pad_format,
+ 	.enum_frame_size = imx208_enum_frame_size,
++	.get_selection = imx208_get_selection,
+ };
+ 
+ static const struct v4l2_subdev_ops imx208_subdev_ops = {
+@@ -910,6 +949,14 @@
+ 				     ARRAY_SIZE(imx208_test_pattern_menu) - 1,
+ 				     0, 0, imx208_test_pattern_menu);
+ 
++	/* 相机安装属性 (只读, libcamera 用作元数据) */
++	v4l2_ctrl_new_std_menu(ctrl_hdlr, &imx208_ctrl_ops,
++			       V4L2_CID_CAMERA_ORIENTATION,
++			       V4L2_CAMERA_ORIENTATION_EXTERNAL, 0,
++			       V4L2_CAMERA_ORIENTATION_FRONT);
++	v4l2_ctrl_new_std(ctrl_hdlr, &imx208_ctrl_ops,
++			  V4L2_CID_CAMERA_SENSOR_ROTATION, 0, 0, 1, 0);
++
+ 	if (ctrl_hdlr->error) {
+ 		ret = ctrl_hdlr->error;
+ 		dev_err(imx208->dev, "%s control init failed (%d)\n",
+@@ -933,6 +980,56 @@
+ 	v4l2_ctrl_handler_free(imx208->sd.ctrl_handler);
+ }
+ 
++static int imx208_power_on(struct imx208 *imx208)
++{
++	int ret;
++
++	ret = regulator_enable(imx208->avdd);
++	if (ret)
++		return ret;
++
++	if (imx208->reset_gpio)
++		gpiod_set_value_cansleep(imx208->reset_gpio, 0);
++	usleep_range(5000, 6000);
++
++	ret = clk_prepare_enable(imx208->clk);
++	if (ret) {
++		regulator_disable(imx208->avdd);
++		return ret;
++	}
++	usleep_range(10000, 15000);
++
++	return 0;
++}
++
++static void imx208_power_off(struct imx208 *imx208)
++{
++	clk_disable_unprepare(imx208->clk);
++	if (imx208->reset_gpio)
++		gpiod_set_value_cansleep(imx208->reset_gpio, 1);
++	regulator_disable(imx208->avdd);
++	imx208->power_enabled = false;
++}
++
++static int imx208_pm_suspend(struct device *dev)
++{
++	struct imx208 *imx208 = to_imx208(i2c_get_clientdata(to_i2c_client(dev)));
++
++	imx208_power_off(imx208);
++
++	return 0;
++}
++
++static int imx208_pm_resume(struct device *dev)
++{
++	struct imx208 *imx208 = to_imx208(i2c_get_clientdata(to_i2c_client(dev)));
++
++	return imx208_power_on(imx208);
++}
++
++static DEFINE_RUNTIME_DEV_PM_OPS(imx208_pm_ops, imx208_pm_suspend,
++				 imx208_pm_resume, NULL);
++
+ static int imx208_probe(struct i2c_client *client)
+ {
+ 	struct imx208 *imx208;
+@@ -957,17 +1054,39 @@
+ 				     "external clock %lu is not supported\n",
+ 				     freq);
+ 
++	/* ACPI 补丁: imx208 上游驱动不含电源管理, 此处补充
++	 * int3472 提供的 avdd 调节器 / reset GPIO / 时钟门控 */
++	imx208->avdd = devm_regulator_get(imx208->dev, "avdd");
++	if (IS_ERR(imx208->avdd))
++		return dev_err_probe(imx208->dev, PTR_ERR(imx208->avdd),
++				     "failed to get avdd regulator\n");
++
++	imx208->reset_gpio = devm_gpiod_get_optional(imx208->dev, "reset",
++						     GPIOD_OUT_HIGH);
++	if (IS_ERR(imx208->reset_gpio))
++		return dev_err_probe(imx208->dev, PTR_ERR(imx208->reset_gpio),
++				     "failed to get reset gpio\n");
++
++	ret = imx208_power_on(imx208);
++	if (ret)
++		return dev_err_probe(imx208->dev, ret, "failed to power on\n");
++	imx208->power_enabled = true;
++
+ 	/* Initialize subdev */
+ 	v4l2_i2c_subdev_init(&imx208->sd, client, &imx208_subdev_ops);
+ 
++	/* 防止探测期间运行时挂起 */
++	pm_runtime_get_noresume(imx208->dev);
++
+ 	full_power = acpi_dev_state_d0(imx208->dev);
+-	if (full_power) {
+-		/* Check module identity */
+-		ret = imx208_identify_module(imx208);
+-		if (ret) {
+-			dev_err(imx208->dev, "failed to find sensor: %d", ret);
+-			goto error_probe;
+-		}
++	if (full_power)
++		pm_runtime_set_active(imx208->dev);
++
++	/* 检查芯片 ID (传感器已由 power_on 上电) */
++	ret = imx208_identify_module(imx208);
++	if (ret) {
++		dev_err(imx208->dev, "failed to find sensor: %d", ret);
++		goto error_probe;
+ 	}
+ 
+ 	/* Set default mode to max resolution */
+@@ -1006,7 +1125,12 @@
+ 	if (full_power)
+ 		pm_runtime_set_active(imx208->dev);
+ 	pm_runtime_enable(imx208->dev);
+-	pm_runtime_idle(imx208->dev);
++	/* 空闲 3 秒后自动断电: avdd(线80) 拉低 → 模块 LED 熄灭 (隐私指示),
++	 * 开相机时自动上电: avdd 拉高 → LED 亮 */
++	pm_runtime_set_autosuspend_delay(imx208->dev, 3000);
++	pm_runtime_use_autosuspend(imx208->dev);
++	pm_runtime_mark_last_busy(imx208->dev);
++	pm_runtime_put_autosuspend(imx208->dev);
+ 
+ 	return 0;
+ 
+@@ -1020,6 +1144,8 @@
+ 	imx208_free_controls(imx208);
+ 
+ error_probe:
++	if (imx208->power_enabled)
++		imx208_power_off(imx208);
+ 	mutex_destroy(&imx208->imx208_mx);
+ 
+ 	return ret;
+@@ -1038,6 +1164,9 @@
+ 	pm_runtime_disable(imx208->dev);
+ 	pm_runtime_set_suspended(imx208->dev);
+ 
++	if (imx208->power_enabled)
++		imx208_power_off(imx208);
++
+ 	mutex_destroy(&imx208->imx208_mx);
+ }
+ 
+@@ -1054,6 +1183,7 @@
+ 	.driver = {
+ 		.name = "imx208",
+ 		.acpi_match_table = ACPI_PTR(imx208_acpi_ids),
++		.pm = pm_ptr(&imx208_pm_ops),
+ 	},
+ 	.probe = imx208_probe,
+ 	.remove = imx208_remove,
