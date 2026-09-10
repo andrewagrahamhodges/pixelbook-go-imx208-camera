@@ -1,5 +1,5 @@
 diff --git a/src/ipa/ipu3/algorithms/tone_mapping.cpp b/src/ipa/ipu3/algorithms/tone_mapping.cpp
-index 160338c..0eacde1 100644
+index 160338c..3414c04 100644
 --- a/src/ipa/ipu3/algorithms/tone_mapping.cpp
 +++ b/src/ipa/ipu3/algorithms/tone_mapping.cpp
 @@ -90,24 +90,41 @@ void ToneMapping::process(IPAContext &context, [[maybe_unused]] const uint32_t f
@@ -24,9 +24,9 @@ index 160338c..0eacde1 100644
 -
 -	if (context.activeState.toneMapping.gamma == gamma_)
 -		return;
-+	gamma_ = 1.9;
++	gamma_ = 2.0;
 +	constexpr double blackPoint = 0.04;
-+	constexpr double contrast = 1.4;
++	constexpr double contrast = 1.35;
  
  	struct ipu3_uapi_gamma_corr_lut &lut =
  		context.activeState.toneMapping.gammaCorrection;

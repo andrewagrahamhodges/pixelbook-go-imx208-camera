@@ -1,0 +1,19 @@
+diff --git a/src/ipa/ipu3/algorithms/awb.cpp b/src/ipa/ipu3/algorithms/awb.cpp
+index 55de05d..2bb4094 100644
+--- a/src/ipa/ipu3/algorithms/awb.cpp
++++ b/src/ipa/ipu3/algorithms/awb.cpp
+@@ -418,6 +418,14 @@ void Awb::awbGreyWorld()
+ 	 * Gain values are unsigned integer value ranging [0, 8) with 13 bit
+ 	 * fractional part.
+ 	 */
++	/*
++	 * Pixelbook Go imx208: grey-world AWB consistently leaves a warm (yellow)
++	 * cast in typical indoor light — it under-corrects warm illumination.
++	 * Apply a fixed trim: reduce red, boost blue, so images come out neutral.
++	 */
++	redGain *= 0.93;
++	blueGain *= 1.10;
++
+ 	redGain = std::clamp(redGain, 0.0, 65535.0 / 8192);
+ 	blueGain = std::clamp(blueGain, 0.0, 65535.0 / 8192);
+ 

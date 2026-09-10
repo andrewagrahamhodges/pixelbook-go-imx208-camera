@@ -38,10 +38,14 @@ Known non-fatal warnings after the fix: missing location/rotation properties and
 Even with the helper in place, indoor images were very dark: the imx208 AGC pegs exposure and analogue gain at max in typical room light, and upstream's IPU3 IPA hardcodes tone-mapping gamma to 1.1 (nearly linear, no shadow lift). `patches/libcamera-imx208-tone-mapping.patch` replaces that curve in `src/ipa/ipu3/algorithms/tone_mapping.cpp` with a three-stage LUT:
 
 1. **Black-point crush (4%)** — values below the sensor noise floor go to true black, so brightness later doesn't turn noise into gray fog.
-2. **Gamma 1.9** — shadow/midtone lift (upstream 1.1 left shadows crushed).
-3. **Contrast S-curve 1.4** — S-curve around the midpoint restores punch so the brightened image doesn't look hazy.
+2. **Gamma 2.0** — shadow/midtone lift (upstream 1.1 left shadows crushed).
+3. **Contrast S-curve 1.35** — S-curve around the midpoint restores punch so the brightened image doesn't look hazy.
 
-Order matters: normalize/crush first, then gamma, then contrast. Values were tuned visually (1.7/0.03/1.3 was the first pass, judged "brighter but foggy"; 1.9/0.04/1.4 is the current best). Exposure/gain are untouched - the lift is entirely ISP-side, so there is no frame-rate cost.
+Order matters: normalize/crush first, then gamma, then contrast. Values were tuned visually (1.7/0.03/1.3 was the first pass, judged "brighter but foggy"; 1.9/0.04/1.4 was the second, judged "much better"; 2.0/0.04/1.35 is the final). Exposure/gain are untouched - the lift is entirely ISP-side, so there is no frame-rate cost.
+
+### White-balance trim (yellow cast fix)
+
+Even with a neutral tone curve, images had a persistent warm (yellow) cast in typical indoor light: upstream's grey-world AWB under-corrects warm illumination. `patches/libcamera-imx208-wb-trim.patch` applies a fixed trim in `src/ipa/ipu3/algorithms/awb.cpp` after the grey-world estimate: red gain ×0.93, blue gain ×1.10. Combined with the tone-mapping patch the indoor image is judged neutral and well exposed.
 
 ## Kernel driver patch (optional)
 
