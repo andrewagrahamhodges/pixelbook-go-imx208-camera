@@ -1,0 +1,71 @@
+diff --git a/src/ipa/ipu3/algorithms/agc.cpp b/src/ipa/ipu3/algorithms/agc.cpp
+index d6a7036..d34e8a0 100644
+--- a/src/ipa/ipu3/algorithms/agc.cpp
++++ b/src/ipa/ipu3/algorithms/agc.cpp
+@@ -51,6 +51,28 @@ LOG_DEFINE_CATEGORY(IPU3Agc)
+ /* Minimum limit for analogue gain value */
+ static constexpr double kMinAnalogueGain = 1.0;
+ 
++/*
++ * Exposure bias applied in the luminance estimator. The mean-based AGC
++ * meters the whole frame, so backlit scenes (bright window behind a dark
++ * subject) leave the subject heavily underexposed. Dividing the estimated
++ * luminance by this factor makes the solver raise exposure accordingly
++ * (+1 EV per factor of 2). The default constraint is a lower bound only,
++ * so it can never cancel the bias back out.
++ */
++static constexpr double kExposureBias = 2.0;
++
++/*
++ * Center-weighted metering. The luminance estimator weights each statistics
++ * cell by a Gaussian of its distance from the frame center (sigma in units
++ * of half-frame dimensions, so 1.0 reaches the edge midpoints and ~1.4 the
++ * corners). The sigma below is aggressive: the centre of the frame carries
++ * most of the meter weight and bright background objects at the frame edge
++ * contribute very little, so backlit scenes expose for the subject rather
++ * than for the window behind it. A uniformly bright scene still meters to
++ * the same value as before, so kExposureBias keeps its meaning.
++ */
++static constexpr double kCenterWeightSigma = 0.28;
++
+ /* \todo Honour the FrameDurationLimits control instead of hardcoding a limit */
+ static constexpr utils::Duration kMaxExposureTime = 60ms;
+ 
+@@ -179,16 +201,33 @@ Histogram Agc::parseStatistics(const ipu3_uapi_stats_3a *stats,
+ double Agc::estimateLuminance(double gain) const
+ {
+ 	RGB<double> sum{ 0.0 };
++	double weightSum = 0.0;
++
++	const double halfWidth = bdsGrid_.width / 2.0;
++	const double halfHeight = bdsGrid_.height / 2.0;
++	const double twoSigmaSquared =
++		2 * kCenterWeightSigma * kCenterWeightSigma;
+ 
+ 	for (unsigned int i = 0; i < rgbTriples_.size(); i++) {
+-		sum.r() += std::min(std::get<0>(rgbTriples_[i]) * gain, 255.0);
+-		sum.g() += std::min(std::get<1>(rgbTriples_[i]) * gain, 255.0);
+-		sum.b() += std::min(std::get<2>(rgbTriples_[i]) * gain, 255.0);
++		/*
++		 * rgbTriples_ was filled row-major over the statistics grid,
++		 * so the cell position in the grid can be recovered from the
++		 * index. Weight falls off as a Gaussian of the distance from
++		 * the frame center, normalised so the frame edges are at 1.0.
++		 */
++		double dx = (i % bdsGrid_.width + 0.5) / halfWidth - 1.0;
++		double dy = (i / bdsGrid_.width + 0.5) / halfHeight - 1.0;
++		double weight = std::exp(-(dx * dx + dy * dy) / twoSigmaSquared);
++
++		weightSum += weight;
++		sum.r() += weight * std::min(std::get<0>(rgbTriples_[i]) * gain, 255.0);
++		sum.g() += weight * std::min(std::get<1>(rgbTriples_[i]) * gain, 255.0);
++		sum.b() += weight * std::min(std::get<2>(rgbTriples_[i]) * gain, 255.0);
+ 	}
+ 
+ 	RGB<double> gains{{ rGain_, gGain_, bGain_ }};
+ 	double ySum = rec601LuminanceFromRGB(sum * gains);
+-	return ySum / (bdsGrid_.height * bdsGrid_.width) / 255;
++	return ySum / weightSum / 255 / kExposureBias;
+ }
+ 
+ /**

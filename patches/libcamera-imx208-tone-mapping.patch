@@ -1,8 +1,8 @@
 diff --git a/src/ipa/ipu3/algorithms/tone_mapping.cpp b/src/ipa/ipu3/algorithms/tone_mapping.cpp
-index 160338c..3414c04 100644
+index 160338c..62ccf6f 100644
 --- a/src/ipa/ipu3/algorithms/tone_mapping.cpp
 +++ b/src/ipa/ipu3/algorithms/tone_mapping.cpp
-@@ -90,24 +90,41 @@ void ToneMapping::process(IPAContext &context, [[maybe_unused]] const uint32_t f
+@@ -90,24 +90,52 @@ void ToneMapping::process(IPAContext &context, [[maybe_unused]] const uint32_t f
  			  [[maybe_unused]] ControlList &metadata)
  {
  	/*
@@ -27,6 +27,14 @@ index 160338c..3414c04 100644
 +	gamma_ = 2.0;
 +	constexpr double blackPoint = 0.04;
 +	constexpr double contrast = 1.35;
++	/*
++	 * Digital brightness lift. The AGC already runs the sensor at its
++	 * exposure/gain ceiling in indoor light, so the AE cannot open up any
++	 * further for backlit scenes; this multiplies the tone-mapped output
++	 * to put faces in the mid-tones. Black point and clipped highlights
++	 * are unaffected (0 maps to 0, clipped values stay clipped).
++	 */
++	constexpr double brightnessGain = 1.4;
  
  	struct ipu3_uapi_gamma_corr_lut &lut =
  		context.activeState.toneMapping.gammaCorrection;
@@ -44,6 +52,9 @@ index 160338c..3414c04 100644
 +		/* S-curve contrast around the midpoint. */
 +		v = v < 0.5 ? 0.5 * std::pow(2.0 * v, contrast)
 +			    : 1.0 - 0.5 * std::pow(2.0 * (1.0 - v), contrast);
++
++		/* Digital brightness lift. */
++		v = std::min(1.0, v * brightnessGain);
  
  		/* The output value is expressed on 13 bits. */
 -		lut.lut[i] = gamma * 8191;

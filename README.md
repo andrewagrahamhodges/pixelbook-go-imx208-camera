@@ -19,6 +19,8 @@ git clone --branch v0.7.2 https://git.libcamera.org/libcamera/libcamera.git
 cd libcamera
 git apply /path/to/libcamera-imx208.patch
 git apply /path/to/libcamera-imx208-tone-mapping.patch
+git apply /path/to/libcamera-imx208-agc-metering.patch
+git apply /path/to/libcamera-imx208-wb-trim.patch
 meson setup build -Dpipelines=uvcvideo,ipu3 -Dipas=ipu3 -Dv4l2=true -Dgstreamer=enabled
 ninja -C build && sudo ninja -C build install
 ```
@@ -40,8 +42,22 @@ Even with the helper in place, indoor images were very dark: the imx208 AGC pegs
 1. **Black-point crush (4%)** — values below the sensor noise floor go to true black, so brightness later doesn't turn noise into gray fog.
 2. **Gamma 2.0** — shadow/midtone lift (upstream 1.1 left shadows crushed).
 3. **Contrast S-curve 1.35** — S-curve around the midpoint restores punch so the brightened image doesn't look hazy.
+4. **Digital brightness lift ×1.4** — multiplier after the contrast stage, clamped at white. Blacks and clipped highlights are unaffected.
 
-Order matters: normalize/crush first, then gamma, then contrast. Values were tuned visually (1.7/0.03/1.3 was the first pass, judged "brighter but foggy"; 1.9/0.04/1.4 was the second, judged "much better"; 2.0/0.04/1.35 is the final). Exposure/gain are untouched - the lift is entirely ISP-side, so there is no frame-rate cost.
+Order matters: normalize/crush first, then gamma, then contrast, then the brightness multiplier. Curve values were tuned visually (1.7/0.03/1.3 was the first pass, judged "brighter but foggy"; 1.9/0.04/1.4 was the second, judged "much better"; 2.0/0.04/1.35 is the final).
+
+The brightness lift exists because the AE has no headroom left in indoor light (see next section): with exposure and analogue gain already at the sensor ceiling, this is the only honest lever. It is entirely ISP-side, so there is no frame-rate cost.
+
+### AE metering patch (backlit scene fix)
+
+In a backlit scene (subject in front of a bright window) the whole-frame, mean-based AGC meters the window too and leaves the subject heavily underexposed. `patches/libcamera-imx208-agc-metering.patch` changes `src/ipa/ipu3/algorithms/agc.cpp` in two ways:
+
+1. **Center-weighted metering** — each statistics cell is weighted by a Gaussian of its distance from frame center, sigma 0.28 half-frame units (aggressive). The bright window at the frame edge contributes almost nothing to the exposure decision; a uniformly bright scene meters to the same value as before, so the bias below keeps its meaning.
+2. **Exposure bias ×2.0 (+1 EV)** — the estimated luminance is divided by 2 before the solver, biasing exposure up one stop. The default AE constraint is a lower bound only, so it cannot cancel the bias out.
+
+Tuning history: the first pass used sigma 0.35, then 0.28 (owner asked for more aggression; A/B in identical light showed the metering had plateaued since the window's weight was already near zero). The exposure bias was tried at 2.8 (+1.5 EV) and judged "far too much" - 2.0 is final.
+
+**Physical exposure ceiling (important context):** with this patch in indoor light the imx208 runs at its sensor ceiling - exposure 1129/1130 lines (~16.5 ms at 60 fps), analogue gain 185/224 (~18×) - while the AGC requests ~595× gain that the hardware clamps. More AE aggression cannot brighten the subject further; only the digital lift in the tone-mapping patch can.
 
 ### White-balance trim (yellow cast fix)
 
