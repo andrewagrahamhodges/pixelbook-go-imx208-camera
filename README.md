@@ -63,7 +63,7 @@ Tuning history: the first pass used sigma 0.35, then 0.28 (owner asked for more 
 
 Even with a neutral tone curve, images had a persistent warm (yellow) cast in typical indoor light: upstream's grey-world AWB under-corrects warm illumination. `patches/libcamera-imx208-wb-trim.patch` applies a fixed trim in `src/ipa/ipu3/algorithms/awb.cpp` after the grey-world estimate.
 
-**Current values: red gain ×1.04, blue gain ×0.97** (warm trim). History: the original trim was cool (red ×0.93, blue ×1.10), tuned for warm evening light; in daylight it over-cooled the image into a pale washed-out look. The trim is load-bearing in both directions — grey-world's estimate varies with the room light, so re-tune by measuring face-region chroma on a live capture if the light in the room changes character.
+**Current values: red gain ×1.02, blue gain ×0.92** (warm trim). History: the original trim was cool (red ×0.93, blue ×1.10), tuned for warm evening light; in daylight it over-cooled the image into a pale washed-out look. A milder warm trim (×1.04/×0.97) still left a blue cast in mixed light; note the trim responds sublinearly (×0.86 barely moved the chroma — AWB stats are gathered post-gain, so a fixed trim partially self-cancels), so land intermediate values by measurement. The trim is load-bearing in both directions — grey-world's estimate varies with the room light, so re-tune by measuring face-region chroma on a live capture if the light in the room changes character.
 
 Install gotcha: the IPA must be installed with `sudo ninja -C build install` (which signs it and places it at the nested `libcamera/ipa/` path). A bare `cp` of `ipa_ipu3.so` to the flat `libcamera/` path silently does nothing — libcamera ignores it.
 

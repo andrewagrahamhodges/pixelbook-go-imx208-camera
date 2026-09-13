@@ -1,5 +1,5 @@
 diff --git a/src/ipa/ipu3/algorithms/awb.cpp b/src/ipa/ipu3/algorithms/awb.cpp
-index 55de05d..340c78d 100644
+index 55de05d..9955a51 100644
 --- a/src/ipa/ipu3/algorithms/awb.cpp
 +++ b/src/ipa/ipu3/algorithms/awb.cpp
 @@ -418,6 +418,14 @@ void Awb::awbGreyWorld()
@@ -11,8 +11,8 @@ index 55de05d..340c78d 100644
 +	 * daylight) grey-world AWB over-boosts blue and the image reads pale and
 +	 * cool. Apply a fixed warm trim: boost red, reduce blue.
 +	 */
-+	redGain *= 1.04;
-+	blueGain *= 0.97;
++	redGain *= 1.02;
++	blueGain *= 0.92;
 +
  	redGain = std::clamp(redGain, 0.0, 65535.0 / 8192);
  	blueGain = std::clamp(blueGain, 0.0, 65535.0 / 8192);
